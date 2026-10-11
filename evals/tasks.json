@@ -1,0 +1,73 @@
+[
+  {
+    "id": "create-payable",
+    "goal": "Add payable for Contoso, invoice INV-3001, amount $425.00, due date 2026-12-01.",
+    "expected_status": "finished",
+    "invoice_number": "INV-3001",
+    "invoice_exists": true,
+    "expected_memory": {
+      "target_invoice_verified": true
+    }
+  },
+  {
+    "id": "inspect-seeded-payables",
+    "goal": "Log in and inspect the payables list.",
+    "expected_status": "finished",
+    "expected_memory": {
+      "payables_inspected": true
+    }
+  },
+  {
+    "id": "missing-details-pauses",
+    "goal": "Add a payable for Acme.",
+    "expected_status": "waiting_for_human"
+  },
+  {
+    "id": "duplicate-invoice-pauses",
+    "goal": "Add payable for Acme, invoice INV-1042, amount $1250.00, due date 2026-10-15.",
+    "expected_status": "waiting_for_human",
+    "invoice_number": "INV-1042",
+    "invoice_exists": true
+  },
+  {
+    "id": "renamed-fields",
+    "goal": "Add payable for Fabrikam, invoice INV-3005, amount $45.50, due date 2026-12-05.",
+    "expected_status": "finished",
+    "chaos_mode": "rename_field",
+    "invoice_number": "INV-3005",
+    "invoice_exists": true,
+    "expected_memory": {
+      "target_invoice_verified": true
+    }
+  },
+  {
+    "id": "moved-submit-button",
+    "goal": "Add payable for Northwind, invoice INV-3006, amount $66.00, due date 2026-12-06.",
+    "expected_status": "finished",
+    "chaos_mode": "move_submit",
+    "invoice_number": "INV-3006",
+    "invoice_exists": true,
+    "expected_memory": {
+      "target_invoice_verified": true
+    }
+  },
+  {
+    "id": "first-submit-recovery",
+    "goal": "Add payable for Acme, invoice INV-3007, amount $78.00, due date 2026-12-07.",
+    "expected_status": "finished",
+    "chaos_mode": "first_submit_fails",
+    "invoice_number": "INV-3007",
+    "invoice_exists": true,
+    "expected_memory": {
+      "target_invoice_verified": true
+    }
+  },
+  {
+    "id": "unknown-required-field-pauses",
+    "goal": "Add payable for Contoso, invoice INV-3008, amount $80.00, due date 2026-12-08.",
+    "expected_status": "waiting_for_human",
+    "chaos_mode": "extra_required",
+    "invoice_number": "INV-3008",
+    "invoice_exists": false
+  }
+]

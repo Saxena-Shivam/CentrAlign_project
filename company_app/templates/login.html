@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+{% block title %}CentrAlign Login{% endblock %}
+
+{% block content %}
+  <div class="login-panel">
+    <h1>CentrAlign Mock Company</h1>
+    <p>Use the demo credentials configured by the environment.</p>
+    <form method="post" action="{{ url_for('login_post') }}">
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" required>
+
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" required>
+
+      <button type="submit">Log in</button>
+    </form>
+  </div>
+{% endblock %}

@@ -1,0 +1,85 @@
+Metadata-Version: 2.4
+Name: centralign-autonomous-worker
+Version: 0.1.0
+Summary: Autonomous AI Task Worker prototype for the CentrAlign internship assignment
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: Flask>=3.0.0
+Requires-Dist: playwright>=1.45.0
+Requires-Dist: langchain-openai>=0.2.0
+Requires-Dist: pydantic>=2.7.0
+Requires-Dist: typer>=0.12.0
+Requires-Dist: pytest>=8.0.0
+
+# CentrAlign Autonomous AI Task Worker
+
+A small, reliable AI task worker prototype built for the CentrAlign internship assignment.
+
+## What is included
+
+- Flask mock company app with login, vendor list, payable form, payables table, and activity log
+- SQLite-backed validation with realistic seeded data
+- Browser automation tool definitions for navigation and form interaction
+- A custom agent loop with plan, memory, tool execution, and verification
+- Run-state trace persistence under `runs/<run-id>/`
+- CLI entrypoints for the app and the worker
+- A small eval harness and demo PowerShell script
+
+## Quick start
+
+1. Create and activate a virtual environment.
+2. Install dependencies:
+   - `python -m pip install -e .`
+3. Copy the environment template if needed:
+   - `copy .env.example .env`
+4. Start the company app:
+   - `centralign app`
+5. In a second terminal, run the worker:
+   - `centralign run --goal "Find the latest pending invoice from Acme and enter it into the payables system."`
+
+## Default login
+
+The mock app uses the same credentials as the agent environment:
+
+- Username: `demo`
+- Password: `demo`
+
+These values are read from environment variables. If terminals are opened separately, they do not share environment state automatically.
+
+## Environment variables
+
+See `.env.example` for the current defaults.
+
+## Validation behavior
+
+The app validates the following server-side rules:
+
+- vendor must exist
+- invoice number must not be blank or duplicated
+- amount must be a valid positive number
+- due date must be a real date in `YYYY-MM-DD` format
+- error banners display and entered values are preserved on failure
+
+## Chaos mode
+
+Set `CHAOS_MODE` to one of the supported values:
+
+- `rename_field`
+- `extra_required`
+- `first_submit_fails`
+- `move_submit`
+
+This intentionally changes the form behavior to exercise robustness.
+
+## Run evidence
+
+Each run stores its state under `runs/<run-id>/` with files such as:
+
+- `state.json`
+- `trace.jsonl`
+
+## Notes
+
+- The loop intentionally uses a small, testable design rather than a broad fake automation.
+- Browser operations are constrained to the configured company app origin.
+- The OpenAI path is wired via `langchain-openai`, but the prototype falls back to a deterministic mock model when no API key is configured.

@@ -1,0 +1,77 @@
+{% extends 'base.html' %}
+{% block title %}Payables{% endblock %}
+
+{% block content %}
+  <div class="topbar">
+    <h1>Payables Dashboard</h1>
+    <a href="{{ url_for('logout') }}">Log out</a>
+  </div>
+
+  <section class="panel">
+    <h2>Add payable</h2>
+    <form method="post" action="{{ url_for('add_payable') }}" class="payable-form">
+      {% if form_state.move_submit %}
+        <div class="submit-wrap"><button type="submit" class="primary">Save payable</button></div>
+      {% endif %}
+
+      <label for="{{ form_state.field_names.vendor }}">Vendor</label>
+      <select id="{{ form_state.field_names.vendor }}" name="{{ form_state.field_names.vendor }}" required>
+        <option value="">Select vendor</option>
+        {% for vendor in vendors %}
+          <option value="{{ vendor }}" {% if vendor == form_state.vendor %}selected{% endif %}>{{ vendor }}</option>
+        {% endfor %}
+      </select>
+
+      <label for="{{ form_state.field_names.invoice_number }}">Invoice number</label>
+      <input id="{{ form_state.field_names.invoice_number }}" name="{{ form_state.field_names.invoice_number }}" type="text" value="{{ form_state.invoice_number }}" required>
+
+      <label for="{{ form_state.field_names.amount }}">Amount</label>
+      <input id="{{ form_state.field_names.amount }}" name="{{ form_state.field_names.amount }}" type="text" value="{{ form_state.amount }}" required>
+
+      <label for="{{ form_state.field_names.due_date }}">Due date</label>
+      <input id="{{ form_state.field_names.due_date }}" name="{{ form_state.field_names.due_date }}" type="date" value="{{ form_state.due_date }}" required>
+
+      {% if form_state.show_extra_required %}
+        <label for="{{ form_state.field_names.approval_code }}">Approval code</label>
+        <input id="{{ form_state.field_names.approval_code }}" name="{{ form_state.field_names.approval_code }}" type="text" value="{{ form_state.approval_code }}" required>
+      {% endif %}
+
+      {% if not form_state.move_submit %}
+        <button type="submit" class="primary">Save payable</button>
+      {% endif %}
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>Payables table</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Vendor</th>
+          <th>Invoice</th>
+          <th>Amount</th>
+          <th>Due date</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in payables %}
+          <tr>
+            <td>{{ row["vendor"] }}</td>
+            <td>{{ row["invoice_number"] }}</td>
+            <td>{{ row["amount"] }}</td>
+            <td>{{ row["due_date"] }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <h2>Activity log</h2>
+    <ul class="log-list">
+      {% for row in logs %}
+        <li><strong>{{ row["created_at"] }}</strong> — {{ row["message"] }}</li>
+      {% endfor %}
+    </ul>
+  </section>
+{% endblock %}

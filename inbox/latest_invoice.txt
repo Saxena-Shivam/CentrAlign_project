@@ -1,0 +1,5 @@
+Invoice Number: INV-1042
+Vendor: Acme
+Amount: $1,250.00
+Due Date: 2026-10-15
+Status: Pending

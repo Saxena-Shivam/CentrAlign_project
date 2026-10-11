@@ -1,0 +1,2 @@
+[console_scripts]
+centralign = centralign_agent.cli:cli_app

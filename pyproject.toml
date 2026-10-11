@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "centralign-autonomous-worker"
+version = "0.1.0"
+description = "Autonomous AI Task Worker prototype for the CentrAlign internship assignment"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "Flask>=3.0.0",
+  "playwright>=1.45.0",
+  "langchain-openai>=0.2.0",
+  "pydantic>=2.7.0",
+  "typer>=0.12.0",
+  "pytest>=8.0.0",
+]
+
+[project.scripts]
+centralign = "centralign_agent.cli:cli_app"
+
+[tool.setuptools]
+package-dir = {"" = "agent/src"}
+
+[tool.setuptools.packages.find]
+where = ["agent/src"]
+include = ["centralign_agent*"]

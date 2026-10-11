@@ -1,0 +1,106 @@
+body {
+  font-family: Arial, sans-serif;
+  background: #f4f7fb;
+  color: #1a1b1f;
+  margin: 0;
+}
+
+.container {
+  max-width: 1100px;
+  margin: 40px auto;
+  padding: 0 20px;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.panel,
+.login-panel {
+  background: #ffffff;
+  border: 1px solid #dfeaf5;
+  border-radius: 10px;
+  padding: 24px;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.04);
+  margin-bottom: 24px;
+}
+
+.login-panel {
+  max-width: 420px;
+  margin: 80px auto;
+}
+
+label {
+  display: block;
+  margin-top: 14px;
+  font-weight: 600;
+}
+
+input, select, button {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #c7d3e3;
+  font-size: 15px;
+}
+
+button {
+  background: #1e88e5;
+  color: white;
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+button.primary {
+  background: #0d6efd;
+  margin-top: 18px;
+}
+
+.flash-box {
+  margin-bottom: 18px;
+}
+
+.flash-message {
+  background: #fff4f4;
+  border: 1px solid #f1b9b9;
+  color: #7a1d1d;
+  padding: 10px 12px;
+  border-radius: 8px;
+  margin-bottom: 10px;
+}
+
+.payable-form {
+  display: grid;
+  gap: 4px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th, td {
+  border-bottom: 1px solid #e5edf7;
+  padding: 10px 8px;
+  text-align: left;
+}
+
+.log-list {
+  list-style: none;
+  padding-left: 0;
+}
+
+.log-list li {
+  padding: 8px 0;
+  border-bottom: 1px solid #eef5ff;
+}
+
+.submit-wrap {
+  margin-top: 10px;
+}

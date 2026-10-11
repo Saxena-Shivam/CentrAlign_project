@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+.env
+.rustfmt.toml
+.pytest_cache/
+coverage.xml
+htmlcov/
+.DS_Store
+runs/*
+!runs/.gitkeep
+company_app/data/*.db
