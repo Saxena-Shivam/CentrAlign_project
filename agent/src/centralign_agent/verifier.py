@@ -53,7 +53,11 @@ class Verifier:
         if (
             "vendor directory" in normalized
             or "vendors page" in normalized
-            or re.search(r"\b(?:inspect|review|show|list)\s+(?:the\s+)?vendors\b", normalized)
+            or re.search(
+                r"\b(?:inspect|review|show|list|summarize|summarise)\s+"
+                r"(?:the\s+)?(?:approved\s+)?vendors\b",
+                normalized,
+            )
         ):
             if memory.get("login_success") and memory.get("vendors_inspected"):
                 return True, "Login succeeded and the visible vendor directory was independently inspected."

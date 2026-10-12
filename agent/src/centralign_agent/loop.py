@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit
 
 from centralign_agent.config import get_settings
@@ -29,7 +30,13 @@ from centralign_agent.tools.browser import (
 )
 from centralign_agent.tools.files import FileToolSet, ReadFileArgs
 from centralign_agent.tools.interaction import FinishArgs, HumanInputArgs, InteractionToolSet
-from centralign_agent.tools.memory import MemoryToolSet, RecallArgs, RememberArgs
+from centralign_agent.tools.memory import (
+    MemoryToolSet,
+    RecallArgs,
+    RememberArgs,
+    TableAnalysisArgs,
+    analyze_table,
+)
 from centralign_agent.tools.registry import ToolRegistry, ToolSpec
 from centralign_agent.verifier import Verifier
 
@@ -954,6 +961,68 @@ def _goal_requests_update(goal: str) -> bool:
     )
 
 
+def _goal_requires_generic_analysis(goal: str) -> bool:
+    normalized = goal.lower()
+    analytical_markers = (
+        "percentage",
+        "percent",
+        "average",
+        "mean",
+        "group",
+        "combined",
+        "repeated",
+        "duplicate",
+        "second-highest",
+        "second highest",
+        "distinct",
+        "strictly greater",
+        "greater than",
+        "financial summary",
+        "each invoice",
+        "every invoice",
+    )
+    return any(marker in normalized for marker in analytical_markers)
+
+
+def _generic_analysis_action(goal: str, observation: dict[str, Any]) -> ToolAction | None:
+    tables = observation.get("tables", [])
+    if not any(isinstance(table, dict) and table.get("headers") for table in tables):
+        return None
+    normalized = goal.lower()
+    operations: list[dict[str, Any]] = []
+    if any(word in normalized for word in ("total", "sum", "financial summary", "percentage", "percent")):
+        operations.append({"kind": "total"})
+    if any(word in normalized for word in ("average", "mean", "financial summary")):
+        operations.append({"kind": "average"})
+    if any(phrase in normalized for phrase in ("greater than the average", "above average", "strictly greater")):
+        operations.append(
+            {"kind": "filter", "operator": ">", "threshold": {"kind": "average"}}
+        )
+    if any(word in normalized for word in ("percentage", "percent")):
+        operations.append({"kind": "percentage", "output": "percentage"})
+    if any(word in normalized for word in ("group", "combined", "vendor total")):
+        operations.append({"kind": "group_sum", "group_by": "VENDOR"})
+    if any(word in normalized for word in ("repeated", "duplicate")):
+        operations.append({"kind": "duplicates"})
+    if "second-highest" in normalized or "second highest" in normalized:
+        operations.append({"kind": "distinct_rank", "rank": 2})
+    if "financial summary" in normalized:
+        operations.extend(
+            operation
+            for operation in (
+                {"kind": "count"},
+                {"kind": "minimum"},
+                {"kind": "maximum"},
+            )
+            if operation not in operations
+        )
+    return ToolAction(
+        tool="analyze_table",
+        arguments={"operations": operations or [{"kind": "count"}]},
+        rationale="Analyze the complete observed table before producing the requested result.",
+    )
+
+
 def _goal_requests_task_report(goal: str) -> bool:
     normalized = goal.lower()
     asks_to_save = bool(re.search(r"\b(?:write|save|create|generate|export)\b", normalized))
@@ -1028,6 +1097,12 @@ def _write_task_report(result: dict, report_path: Path, goal: str, summary: str)
     if not tables and result.get("activity_items"):
         lines.extend(["", "## Activity entries", ""])
         lines.extend(f"- {item}" for item in result["activity_items"])
+    analysis = result.get("table_analysis")
+    if isinstance(analysis, dict) and analysis.get("results"):
+        lines.extend(["", "## Derived analysis", ""])
+        lines.append("```json")
+        lines.append(json.dumps(analysis["results"], indent=2, ensure_ascii=False))
+        lines.append("```")
 
     content = "\n".join(lines) + "\n"
     report_path.write_text(content, encoding="utf-8")
@@ -1310,8 +1385,13 @@ def _browser_error_recovery_action(observation: dict) -> ToolAction | None:
     )
 
 
-def build_registry(state_path: Path, browser_tools: BrowserToolSet) -> ToolRegistry:
+def build_registry(
+    state_path: Path,
+    browser_tools: BrowserToolSet,
+    table_context: dict[str, Any] | None = None,
+) -> ToolRegistry:
     registry = ToolRegistry()
+    table_context = table_context if table_context is not None else {}
     registry.register(
         ToolSpec(
             name="navigate",
@@ -1420,6 +1500,20 @@ def build_registry(state_path: Path, browser_tools: BrowserToolSet) -> ToolRegis
     )
     registry.register(
         ToolSpec(
+            name="analyze_table",
+            description=(
+                "Run declarative analysis over the latest observed table. Operations support "
+                "total, average, minimum, maximum, count, percentage, filter, group_sum, "
+                "duplicates, and distinct_rank. Use percentage with amount_column and output; "
+                "use filter with operator and threshold such as {'kind':'average'}."
+            ),
+            input_model=TableAnalysisArgs,
+            read_only=True,
+            execution=lambda arguments: analyze_table(arguments, table_context["table"]),
+        )
+    )
+    registry.register(
+        ToolSpec(
             name="request_human_input",
             description="Pause and ask for explicit human input when the agent reaches a blocking decision.",
             input_model=HumanInputArgs,
@@ -1453,6 +1547,69 @@ class AgentLoop:
         available_tools: list,
         browser_tools: BrowserToolSet,
     ) -> ToolAction | None:
+        if _goal_requires_generic_analysis(goal):
+            action = _login_action(recent_observation, self.settings)
+            if action is not None:
+                return action
+            if state.memory.get("table_analysis"):
+                analysis = state.memory["table_analysis"]
+                total = next(
+                    (item.get("value") for item in analysis.get("results", []) if item.get("kind") == "total"),
+                    None,
+                )
+                average = next(
+                    (item.get("value") for item in analysis.get("results", []) if item.get("kind") == "average"),
+                    None,
+                )
+                matching = next(
+                    (item.get("rows", []) for item in analysis.get("results", []) if item.get("kind") == "filter"),
+                    [],
+                )
+                if total is not None:
+                    state.memory["payables_total"] = str(total)
+                if average is not None:
+                    state.memory["payables_average"] = str(average)
+                if matching:
+                    state.memory["payables_average_matching_invoices"] = [
+                        row.get("INVOICE NUMBER") for row in matching if row.get("INVOICE NUMBER")
+                    ]
+                message = "The requested table analysis was completed from observed rows."
+                if total is not None and average is not None:
+                    rows = state.memory.get("last_table_observation", {}).get("tables", [{}])[0].get("rows", [])
+                    amounts = [
+                        Decimal(str(row[2]).replace("$", "").replace(",", ""))
+                        for row in rows
+                        if len(row) > 2
+                    ]
+                    expression = " + ".join(f"${amount:,.2f}" for amount in amounts)
+                    message = (
+                        f"Payables inspected (read-only): {len(rows)}. "
+                        f"{expression} = ${Decimal(str(total)):,.2f}; "
+                        f"${Decimal(str(total)):,.2f} / {len(rows)} = ${Decimal(str(average)):,.2f}. "
+                        "No records were changed."
+                    )
+                if matching and average is not None:
+                    details = "; ".join(
+                        f"{row.get('INVOICE NUMBER')} ({row.get('VENDOR')}) ${Decimal(str(row.get('AMOUNT')).replace('$', '').replace(',', '')):,.2f}"
+                        for row in matching
+                    )
+                    message += f" Invoices with amount > ${Decimal(str(average)):,.2f}: {details}."
+                return ToolAction(
+                    tool="finish",
+                    arguments={"message": message},
+                    rationale="All requested declarative analyses have evidence.",
+                )
+            if isinstance(recent_observation, dict):
+                analysis_action = _generic_analysis_action(goal, recent_observation)
+                if analysis_action is not None:
+                    return analysis_action
+            return _browser_error_recovery_action(recent_observation) or self.model.decide(
+                goal,
+                json.dumps(recent_observation, ensure_ascii=False),
+                state.plan or {},
+                available_tools,
+                state.memory,
+            )
         action = _payable_post_submission_action(goal, state.memory)
         if action is None:
             action = _invoice_payment_action(recent_observation, goal, state.memory)
@@ -1508,7 +1665,8 @@ class AgentLoop:
             headless=self.settings.headless,
             action_delay_ms=self.settings.browser_action_delay_ms,
         )
-        registry = build_registry(state_path, browser_tools)
+        table_context: dict[str, Any] = {}
+        registry = build_registry(state_path, browser_tools, table_context)
         planner = Planner(self.model)
         try:
             plan = planner.create_plan(goal)
@@ -1566,7 +1724,12 @@ class AgentLoop:
                     break
 
             if action.tool == "finish" and _goal_requests_task_report(goal):
-                report_source = recent_observation if isinstance(recent_observation, dict) else {}
+                report_source = (
+                    dict(state.memory.get("last_table_observation", {}))
+                    if isinstance(state.memory.get("last_table_observation"), dict)
+                    else (recent_observation if isinstance(recent_observation, dict) else {})
+                )
+                report_source["table_analysis"] = state.memory.get("table_analysis")
                 if not state.memory.get("task_report_verified"):
                     report_error: Exception | None = None
                     report_path: str | None = None
@@ -1773,9 +1936,44 @@ class AgentLoop:
             except Exception as exc:  # explicit failure observation for adaptation
                 result = {"status": "error", "message": str(exc), "tool": action.tool}
 
+            if isinstance(result, dict):
+                current_page = result.get("current_page", result)
+                if isinstance(current_page, dict):
+                    tables = current_page.get("tables")
+                    if isinstance(tables, list):
+                        table = next(
+                            (
+                                item for item in tables
+                                if isinstance(item, dict)
+                                and item.get("headers")
+                                and isinstance(item.get("rows"), list)
+                            ),
+                            None,
+                        )
+                        if table is not None:
+                            table_context["table"] = table
+                            state.memory["last_table_observation"] = result
+                            if _goal_requires_generic_analysis(goal):
+                                state.memory["payables_inspected"] = True
+                            if _goal_requires_generic_analysis(goal) and "/payables" in str(result.get("url", "")):
+                                state.memory["login_success"] = True
+
             state.steps.append(
                 {"step": step_number, "action": _redact_action(action.model_dump()), "observation": result}
             )
+            if action.tool == "analyze_table" and result.get("status") == "ok":
+                state.memory["table_analysis"] = result
+                state.memory["payables_calculation_completed"] = True
+                if any(
+                    item.get("kind") == "filter"
+                    and item.get("operator") == ">"
+                    and isinstance(item.get("threshold"), str)
+                    for item in result.get("results", [])
+                ):
+                    state.memory["payables_average_comparison_verified"] = True
+                state.evidence.append(
+                    f"Table analysis completed with {len(result.get('results', []))} operations."
+                )
             trace.record({"type": "observation", "step": step_number, "result": result})
             print(f"[CentrAlign] Observation: {json.dumps(result, ensure_ascii=False)[:1200]}")
             _log_field_verification(action, result)

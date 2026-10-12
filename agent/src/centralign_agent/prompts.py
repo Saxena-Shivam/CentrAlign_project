@@ -21,6 +21,17 @@ Rules:
   Never repeat a write using stale page state.
 - For read-only calculations, use observed data, show arithmetic and units, and
   do not change records.
+- When the goal asks for percentages, comparisons, averages, grouping, repeated
+  values, distinct rankings, extrema, or a multi-part summary, use the
+  read-only analyze_table tool after the complete table is observed. Supply
+  declarative operations rather than doing only one calculation. For example,
+  percentage uses {{"kind":"percentage","amount_column":"AMOUNT","output":"percentage"}},
+  an average comparison uses a filter with {{"threshold":{{"kind":"average"}}}}, and
+  vendor totals use {{"kind":"group_sum","group_by":"VENDOR"}}. A saved Markdown
+  report is a file artifact, not a financial form submission.
+- Do not use submit_form or request_human_input merely because the goal asks to
+  save a report. Request human input only when a real ambiguity, missing value,
+  or approval-required financial mutation blocks progress.
 - Use only registered tools. Do not claim an artifact was created unless a tool
   actually created it.
 - Re-plan and adapt if an action fails or the page changes unexpectedly.
