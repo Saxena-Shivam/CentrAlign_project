@@ -56,6 +56,75 @@ def test_highest_amount_action_reports_all_tied_invoices():
     assert "tie" in action.arguments["message"].lower()
 
 
+def test_highest_amount_uses_existing_table_without_repeating_read():
+    action = _highest_amount_action(
+        {
+            "url": "http://127.0.0.1:3000/payables",
+            "tables": [
+                {
+                    "headers": ["Invoice number", "Amount"],
+                    "rows": [["INV-1", "$100.00"], ["INV-2", "$200.00"]],
+                }
+            ],
+        },
+        "Identify the highest amount invoice and save a report.",
+        {},
+    )
+    assert action is not None
+    assert action.tool == "finish"
+
+
+def test_smallest_amount_action_reports_invoice_details():
+    action = _highest_amount_action(
+        {
+            "url": "http://127.0.0.1:3000/payables",
+            "tables": [
+                {
+                    "headers": ["Vendor", "Invoice number", "Amount", "Due date"],
+                    "rows": [
+                        ["Acme", "INV-1", "$100.00", "2026-10-01"],
+                        ["Contoso", "INV-2", "$25.50", "2026-10-02"],
+                        ["Fabrikam", "INV-3", "$25.50", "2026-10-03"],
+                    ],
+                }
+            ],
+        },
+        "Identify the invoice with the smallest amount and report its invoice ID, vendor, amount, and due date.",
+        {},
+    )
+    assert action is not None
+    assert action.tool == "finish"
+    assert "INV-2" in action.arguments["message"]
+    assert "INV-3" in action.arguments["message"]
+    assert "$25.50" in action.arguments["message"]
+
+
+def test_latest_due_date_action_reports_all_ties_when_requested():
+    from centralign_agent.loop import _latest_invoice_action
+
+    action = _latest_invoice_action(
+        {
+            "url": "http://127.0.0.1:3000/payables",
+            "tables": [
+                {
+                    "headers": ["Invoice number", "Amount", "Due date"],
+                    "rows": [
+                        ["INV-1", "$100.00", "2026-12-01"],
+                        ["INV-2", "$200.00", "2026-12-22"],
+                        ["INV-3", "$300.00", "2026-12-22"],
+                    ],
+                }
+            ],
+        },
+        "Find all invoices sharing the latest due date.",
+        {"latest_invoice_inspected": True},
+    )
+    assert action is not None
+    assert action.tool == "finish"
+    assert "INV-2" in action.arguments["message"]
+    assert "INV-3" in action.arguments["message"]
+
+
 def test_report_verifier_accepts_relative_path_from_run_directory(monkeypatch, tmp_path):
     report = tmp_path / "runs" / "run-1" / "task_report.md"
     report.parent.mkdir(parents=True)
@@ -577,6 +646,34 @@ def test_agent_reports_total_with_calculation_without_model_loop(monkeypatch, tm
         "read_page",
         "finish",
     ]
+
+
+def test_agent_filters_every_invoice_strictly_above_average(monkeypatch, tmp_path):
+    monkeypatch.setenv("DEMO_USERNAME", "demo")
+    monkeypatch.setenv("DEMO_PASSWORD", "demo")
+    monkeypatch.setenv("EVAL_DB_PATH", str(tmp_path / "average_filter.db"))
+    server = make_server("127.0.0.1", 0, create_app())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv("APP_BASE_URL", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setattr(agent_loop, "get_model_adapter", lambda: MockModelAdapter())
+    try:
+        result = AgentLoop(tmp_path / "average_filter_runs").run(
+            "Log in and inspect every payable record. Calculate the average invoice amount, "
+            "then list every invoice whose amount is strictly greater than that average. "
+            "Explain the comparison, include the invoice ID, vendor, and amount, and save a "
+            "verified Markdown report containing all invoice details. Do not change financial records."
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert result.status == "finished"
+    assert result.memory["payables_average_comparison_verified"] is True
+    assert result.memory["payables_average_matching_invoices"] == ["INV-1042"]
+    assert "amount > $1,115.25" in result.final_message
+    assert "INV-1042 (Acme) $1,250.00" in result.final_message
+    assert "INV-2041" not in result.final_message
 
 
 def test_agent_navigates_to_activity_and_summarizes_latest_entries(monkeypatch, tmp_path):

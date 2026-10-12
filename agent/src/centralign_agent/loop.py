@@ -166,6 +166,9 @@ def _payables_calculation_action(observation: dict, goal: str, memory: dict) -> 
     normalized_goal = goal.lower()
     if _goal_requests_latest_invoice(goal) or _goal_requests_vendors(goal) or _goal_requests_update(goal):
         return None
+    threshold_action = _payables_average_comparison_action(observation, goal, memory)
+    if threshold_action is not None:
+        return threshold_action
     asks_count = bool(
         re.search(r"\bcount\b", normalized_goal)
         or "number of payables" in normalized_goal
@@ -248,17 +251,30 @@ def _payables_calculation_action(observation: dict, goal: str, memory: dict) -> 
     )
 
 
-def _highest_amount_action(observation: dict, goal: str, memory: dict) -> ToolAction | None:
-    if not _goal_requests_highest_amount(goal):
+def _payables_average_comparison_action(
+    observation: dict,
+    goal: str,
+    memory: dict,
+) -> ToolAction | None:
+    """Evaluate a strict row comparison against the observed average."""
+    normalized_goal = goal.lower()
+    if not re.search(r"\b(?:average|mean)\b", normalized_goal):
         return None
+    if not re.search(
+        r"\b(?:greater|more|above|over|higher)\b.{0,30}\b(?:average|mean)\b"
+        r"|\b(?:average|mean)\b.{0,30}\b(?:greater|more|above|over|higher)\b",
+        normalized_goal,
+    ):
+        return None
+
     page = observation.get("current_page", observation)
     if not isinstance(page, dict) or "/payables" not in str(page.get("url", "")):
         return None
-    if not memory.get("highest_amount_inspected"):
+    if not memory.get("payables_calculation_inspected"):
         return ToolAction(
             tool="read_page",
             arguments={"selector": "body"},
-            rationale="Read the visible payable rows before comparing their amounts.",
+            rationale="Read every visible payable row before calculating and filtering by the average.",
         )
 
     table = next(
@@ -273,8 +289,103 @@ def _highest_amount_action(observation: dict, goal: str, memory: dict) -> ToolAc
     if table is None:
         return ToolAction(
             tool="request_human_input",
+            arguments={"reason": "The payables page did not expose invoice and amount columns for comparison."},
+            rationale="Do not filter invoices without complete observed rows.",
+        )
+
+    headers = [str(header).strip().lower() for header in table["headers"]]
+    amount_index = headers.index("amount")
+    invoice_index = next(index for index, header in enumerate(headers) if "invoice" in header)
+    vendor_index = next((index for index, header in enumerate(headers) if "vendor" in header), None)
+    due_date_index = next((index for index, header in enumerate(headers) if "due" in header), None)
+    rows: list[tuple[Decimal, str, str, str, str]] = []
+    try:
+        for row in table.get("rows", []):
+            required_indexes = [amount_index, invoice_index]
+            if vendor_index is not None:
+                required_indexes.append(vendor_index)
+            if due_date_index is not None:
+                required_indexes.append(due_date_index)
+            if len(row) <= max(required_indexes):
+                raise ValueError("A payable row is missing a required field.")
+            amount = Decimal(str(row[amount_index]).replace("$", "").replace(",", "").strip())
+            rows.append(
+                (
+                    amount,
+                    str(row[invoice_index]),
+                    str(row[vendor_index]) if vendor_index is not None else "",
+                    str(row[due_date_index]) if due_date_index is not None else "",
+                    " | ".join(str(cell) for cell in row),
+                )
+            )
+    except (InvalidOperation, ValueError, TypeError, IndexError):
+        return ToolAction(
+            tool="request_human_input",
+            arguments={"reason": "At least one payable row was incomplete or had an invalid amount."},
+            rationale="Do not report a threshold comparison from incomplete evidence.",
+        )
+    if not rows:
+        return ToolAction(
+            tool="request_human_input",
+            arguments={"reason": "The payables table contains no rows to compare."},
+            rationale="The average and strict comparison are undefined without observed rows.",
+        )
+
+    total = sum((row[0] for row in rows), Decimal("0"))
+    average = total / len(rows)
+    matching_rows = [row for row in rows if row[0] > average]
+    memory["payables_calculation_completed"] = True
+    memory["payables_average"] = f"${average:,.2f}"
+    memory["payables_average_comparison"] = "strictly greater"
+    memory["payables_average_matching_invoices"] = [row[1] for row in matching_rows]
+    memory["payables_average_comparison_verified"] = True
+    details = "; ".join(
+        f"{invoice} ({vendor}) ${amount:,.2f}" + (f", due {due_date}" if due_date else "")
+        for amount, invoice, vendor, due_date, _ in matching_rows
+    )
+    if not matching_rows:
+        details = "No invoice amount is strictly greater than the observed average."
+    return ToolAction(
+        tool="finish",
+        arguments={
+            "message": (
+                f"Observed {len(rows)} invoices totaling ${total:,.2f}; "
+                f"average = ${total:,.2f} / {len(rows)} = ${average:,.2f}. "
+                f"Strict comparison: amount > ${average:,.2f}. "
+                f"Matching invoice(s): {details}. No records were changed."
+            )
+        },
+        rationale="Calculate the observed average first, then report every row strictly above it.",
+    )
+
+
+def _highest_amount_action(observation: dict, goal: str, memory: dict) -> ToolAction | None:
+    direction = _amount_extreme_direction(goal)
+    if direction is None:
+        return None
+    page = observation.get("current_page", observation)
+    if not isinstance(page, dict) or "/payables" not in str(page.get("url", "")):
+        return None
+    table = next(
+        (
+            item for item in page.get("tables", [])
+            if isinstance(item, dict)
+            and "amount" in [str(header).strip().lower() for header in item.get("headers", [])]
+            and any("invoice" in str(header).strip().lower() for header in item.get("headers", []))
+        ),
+        None,
+    )
+    if table is None:
+        if not memory.get("highest_amount_inspected"):
+            return ToolAction(
+                tool="read_page",
+                arguments={"selector": "body"},
+                rationale="Read the visible payable rows before comparing their amounts.",
+            )
+        return ToolAction(
+            tool="request_human_input",
             arguments={"reason": "The visible payables register did not expose invoice and amount columns."},
-            rationale="Do not identify a maximum without the required observed fields.",
+            rationale="Do not identify an amount extreme without the required observed fields.",
         )
 
     headers = [str(header).strip().lower() for header in table["headers"]]
@@ -297,40 +408,49 @@ def _highest_amount_action(observation: dict, goal: str, memory: dict) -> ToolAc
         return ToolAction(
             tool="request_human_input",
             arguments={"reason": "At least one visible payable amount could not be parsed safely."},
-            rationale="Avoid reporting a maximum from incomplete or invalid observed data.",
+            rationale="Avoid reporting an amount extreme from incomplete or invalid observed data.",
         )
     if not parsed_rows:
         return ToolAction(
             tool="request_human_input",
             arguments={"reason": "The visible payables register contains no invoice rows to compare."},
-            rationale="A highest invoice cannot be identified from an empty register.",
+            rationale="An amount extreme cannot be identified from an empty register.",
         )
 
-    highest_amount = max(row[0] for row in parsed_rows)
-    highest_rows = [row for row in parsed_rows if row[0] == highest_amount]
+    extreme_amount = max(row[0] for row in parsed_rows) if direction == "highest" else min(
+        row[0] for row in parsed_rows
+    )
+    extreme_rows = [row for row in parsed_rows if row[0] == extreme_amount]
     memory["highest_amount_inspected"] = True
-    memory["highest_amount_verified"] = True
-    memory["highest_amount"] = f"${highest_amount:,.2f}"
-    memory["highest_amount_invoices"] = [row[1] for row in highest_rows]
+    memory["amount_extreme_inspected"] = True
+    memory["amount_extreme_verified"] = True
+    memory["amount_extreme_direction"] = direction
+    memory["amount_extreme"] = f"${extreme_amount:,.2f}"
+    memory["amount_extreme_invoices"] = [row[1] for row in extreme_rows]
+    if direction == "highest":
+        memory["highest_amount_verified"] = True
+        memory["highest_amount"] = f"${extreme_amount:,.2f}"
+        memory["highest_amount_invoices"] = [row[1] for row in extreme_rows]
     details = "; ".join(
         f"{invoice} ({vendor})" if vendor else invoice
-        for _, invoice, vendor in highest_rows
+        for _, invoice, vendor in extreme_rows
     )
     tie_text = (
-        f"{len(highest_rows)} invoices tie at {highest_amount:,.2f}; the observed register shows "
+        f"{len(extreme_rows)} invoices tie at {extreme_amount:,.2f}; the observed register shows "
         f"the same amount for {details}."
-        if len(highest_rows) > 1
-        else f"No tie was observed; {details} has the highest amount."
+        if len(extreme_rows) > 1
+        else f"No tie was observed; {details} has the {direction} amount."
     )
+    label = "highest" if direction == "highest" else "smallest"
     return ToolAction(
         tool="finish",
         arguments={
             "message": (
-                f"The highest-amount invoice amount is ${highest_amount:,.2f}. "
-                f"Tied invoice(s): {details}. {tie_text} No records were changed."
+                f"The {label}-amount invoice amount is ${extreme_amount:,.2f}. "
+                f"Matching invoice(s): {details}. {tie_text} No records were changed."
             )
         },
-        rationale="Compare every observed payable amount and report all rows sharing the maximum.",
+        rationale=f"Compare every observed payable amount and report all rows sharing the {direction} value.",
     )
 
 
@@ -625,6 +745,22 @@ def _latest_invoice_action(observation: dict, goal: str, memory: dict) -> ToolAc
     tied_rows = [row for row in rows if str(row[date_index]) == latest_date]
     if len(tied_rows) > 1:
         tied_invoices = ", ".join(str(row[invoice_index]) for row in tied_rows)
+        if re.search(r"\ball\b", normalized_goal) and re.search(
+            r"\b(?:sharing|tied|same)\b", normalized_goal
+        ):
+            memory["latest_invoice_found"] = [
+                str(row[invoice_index]) for row in tied_rows
+            ]
+            return ToolAction(
+                tool="finish",
+                arguments={
+                    "message": (
+                        f"The latest visible due date is {latest_date}. "
+                        f"All invoices sharing that date are: {tied_invoices}."
+                    )
+                },
+                rationale="Report every invoice tied for the latest observed due date.",
+            )
         return ToolAction(
             tool="request_human_input",
             arguments={
@@ -777,16 +913,23 @@ def _goal_requests_latest_invoice(goal: str) -> bool:
     normalized = goal.lower()
     return bool(
         re.search(r"\b(?:latest|newest|most recent)\b", normalized)
-        and re.search(r"\b(?:invoice|payable)\b", normalized)
+        and re.search(r"\b(?:invoices?|payables?)\b", normalized)
     )
 
 
 def _goal_requests_highest_amount(goal: str) -> bool:
+    return _amount_extreme_direction(goal) == "highest"
+
+
+def _amount_extreme_direction(goal: str) -> str | None:
     normalized = goal.lower()
-    return bool(
-        re.search(r"\b(?:highest|largest|maximum|max)\b", normalized)
-        and re.search(r"\b(?:amount|invoice|payable)\b", normalized)
-    )
+    if not re.search(r"\b(?:amount|invoice|payable)\b", normalized):
+        return None
+    if re.search(r"\b(?:highest|largest|maximum|max)\b", normalized):
+        return "highest"
+    if re.search(r"\b(?:smallest|lowest|minimum|min)\b", normalized):
+        return "smallest"
+    return None
 
 
 def _goal_requests_vendors(goal: str) -> bool:
@@ -1124,8 +1267,8 @@ def _initial_goal_criteria(goal: str) -> dict[str, dict[str, str]]:
         criteria["calculation"] = {"status": "pending"}
     if _goal_requests_latest_invoice(goal):
         criteria["latest_invoice"] = {"status": "pending"}
-    if _goal_requests_highest_amount(goal):
-        criteria["highest_amount"] = {"status": "pending"}
+    if _amount_extreme_direction(goal):
+        criteria["amount_extreme"] = {"status": "pending"}
     if _goal_requests_update(goal):
         criteria["update"] = {"status": "pending"}
     if re.search(r"\b(?:add|create|enter|record)\b", normalized) and (
@@ -1302,6 +1445,55 @@ class AgentLoop:
         self.run_dir = run_dir or Path("runs")
         self.model = get_model_adapter()
 
+    def _legacy_action(
+        self,
+        goal: str,
+        recent_observation: dict | str,
+        state: RunState,
+        available_tools: list,
+        browser_tools: BrowserToolSet,
+    ) -> ToolAction | None:
+        action = _payable_post_submission_action(goal, state.memory)
+        if action is None:
+            action = _invoice_payment_action(recent_observation, goal, state.memory)
+        if action is None:
+            action = _payable_update_action(recent_observation, goal, state.memory)
+        if action is None:
+            action = _latest_invoice_action(recent_observation, goal, state.memory)
+        if action is None:
+            action = _highest_amount_action(recent_observation, goal, state.memory)
+        if action is None:
+            action = _payables_calculation_action(recent_observation, goal, state.memory)
+        if action is None:
+            action = _payables_count_action(recent_observation, goal, state.memory)
+        if action is None:
+            action = _payables_inspection_action(recent_observation, goal, state.memory)
+        if action is None:
+            action = _activity_page_action(recent_observation, goal, state.memory)
+        if action is None:
+            action = _vendors_page_action(recent_observation, goal, state.memory)
+        if action is None:
+            action = _local_payables_action(
+                recent_observation,
+                goal,
+                state.plan,
+                available_tools,
+                state.memory,
+            )
+        if action is None and isinstance(recent_observation, dict):
+            action = _browser_error_recovery_action(recent_observation)
+        if action is None:
+            action = _login_action(recent_observation, self.settings)
+        if action is None:
+            action = self.model.decide(
+                goal,
+                json.dumps(recent_observation, ensure_ascii=False),
+                state.plan or {},
+                available_tools,
+                state.memory,
+            )
+        return action
+
     def run(self, goal: str) -> RunState:
         run_id = uuid.uuid4().hex
         run_dir = self.run_dir / run_id
@@ -1330,6 +1522,16 @@ class AgentLoop:
             browser_tools.close()
             return state
         state.plan = plan.model_dump()
+        if callable(getattr(self.model, "evaluate_completion", None)):
+            state.memory["goal_criteria"] = {
+                f"criterion_{index}": {
+                    "criterion_id": f"criterion_{index}",
+                    "description": criterion,
+                    "status": "pending",
+                    "evidence": [],
+                }
+                for index, criterion in enumerate(plan.success_criteria, start=1)
+            }
         trace.record({"type": "plan", "plan": state.plan})
 
         print(f"[CentrAlign] Run {run_id} started")
@@ -1346,54 +1548,22 @@ class AgentLoop:
                     rationale="Open the configured company app login page.",
                 )
             else:
-                action = _payable_post_submission_action(goal, state.memory)
-                if action is None:
-                    action = _invoice_payment_action(recent_observation, goal, state.memory)
-                if action is None:
-                    action = _payable_update_action(recent_observation, goal, state.memory)
-                if action is None:
-                    action = _latest_invoice_action(recent_observation, goal, state.memory)
-                if action is None:
-                    action = _highest_amount_action(recent_observation, goal, state.memory)
-                if action is None:
-                    action = _payables_calculation_action(recent_observation, goal, state.memory)
-                if action is None:
-                    action = _payables_count_action(recent_observation, goal, state.memory)
-                if action is None:
-                    action = _payables_inspection_action(recent_observation, goal, state.memory)
-                if action is None:
-                    action = _activity_page_action(recent_observation, goal, state.memory)
-                if action is None:
-                    action = _vendors_page_action(recent_observation, goal, state.memory)
-                if action is None:
-                    action = _local_payables_action(
-                        recent_observation,
+                try:
+                    action = self._legacy_action(
                         goal,
-                        state.plan,
+                        recent_observation,
+                        state,
                         available_tools,
-                        state.memory,
+                        browser_tools,
                     )
-                if action is None and isinstance(recent_observation, dict):
-                    action = _browser_error_recovery_action(recent_observation)
-                if action is None:
-                    action = _login_action(recent_observation, self.settings)
-                if action is None:
-                    try:
-                        action = self.model.decide(
-                            goal,
-                            json.dumps(recent_observation, ensure_ascii=False),
-                            state.plan,
-                            available_tools,
-                            state.memory,
-                        )
-                    except Exception as exc:
-                        state.status = "failed"
-                        state.final_message = f"Model decision failed: {exc}"
-                        trace.record({"type": "error", "stage": "decision", "step": step_number, "message": state.final_message})
-                        state.persist(state_path)
-                        print(f"[CentrAlign] Final status: {state.status}")
-                        print(f"[CentrAlign] Error: {state.final_message}")
-                        break
+                except Exception as exc:
+                    state.status = "failed"
+                    state.final_message = f"Action selection failed: {exc}"
+                    trace.record({"type": "error", "stage": "decision", "step": step_number, "message": state.final_message})
+                    state.persist(state_path)
+                    print(f"[CentrAlign] Final status: {state.status}")
+                    print(f"[CentrAlign] Error: {state.final_message}")
+                    break
 
             if action.tool == "finish" and _goal_requests_task_report(goal):
                 report_source = recent_observation if isinstance(recent_observation, dict) else {}
@@ -1761,6 +1931,8 @@ class AgentLoop:
                         state.evidence.append("Payable rows and amounts were captured from the rendered table.")
                     if state.memory.get("highest_amount_inspected"):
                         _set_criterion(state.memory, "highest_amount", "completed")
+                    if state.memory.get("amount_extreme_inspected"):
+                        _set_criterion(state.memory, "amount_extreme", "completed")
                     target_invoice = _goal_invoice_number(goal)
                     if target_invoice and _payables_page_contains_invoice(result, target_invoice):
                         state.memory["target_invoice_verified"] = True
@@ -1843,6 +2015,28 @@ class AgentLoop:
             state.persist(state_path)
 
         browser_tools.close()
+        if state.memory.get("finish_requested") and state.status != "waiting_for_human":
+            goal_criteria = list(state.memory.get("goal_criteria", {}).values())
+            try:
+                evaluation = self.model.evaluate_completion(
+                    goal,
+                    goal_criteria,
+                    state.evidence,
+                    state.__dict__,
+                )
+                for item in evaluation.criteria:
+                    criterion = state.memory["goal_criteria"].get(item.criterion_id)
+                    if criterion is not None:
+                        criterion["status"] = item.status
+                        criterion["evidence"] = item.evidence
+                        criterion["reason"] = item.reason
+                state.memory["completion_evaluation"] = evaluation.model_dump()
+                state.evidence.append(
+                    f"Completion evaluation: {evaluation.summary or 'criteria evaluated independently.'}"
+                )
+            except Exception as exc:
+                state.memory["completion_evaluation_error"] = str(exc)
+                state.evidence.append(f"Completion evaluation failed: {exc}")
         verifier = Verifier()
         ok, message = verifier.verify(goal, state.__dict__)
         if state.status == "running":

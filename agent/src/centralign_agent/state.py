@@ -44,6 +44,8 @@ class RunState:
                     "status": self.status,
                     "final_message": self.final_message,
                     "evidence": self.evidence,
+                    "trace_path": self.trace_path,
+                    "run_dir": self.run_dir,
                 },
                 fh,
                 indent=2,

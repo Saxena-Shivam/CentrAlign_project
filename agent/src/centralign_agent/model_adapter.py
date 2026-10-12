@@ -34,6 +34,18 @@ class PlanResponse(BaseModel):
         return value
 
 
+class CriterionEvaluation(BaseModel):
+    criterion_id: str
+    status: str = Field(..., pattern="^(completed|pending|blocked|awaiting_human)$")
+    evidence: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
+class CompletionEvaluation(BaseModel):
+    criteria: list[CriterionEvaluation] = Field(..., min_length=1)
+    summary: str = ""
+
+
 class ModelAdapter:
     def plan(self, goal: str, history: list[str] | None = None) -> dict[str, Any]:
         raise NotImplementedError
@@ -47,6 +59,23 @@ class ModelAdapter:
         memory: dict[str, Any],
     ) -> ToolAction:
         raise NotImplementedError
+
+    def evaluate_completion(
+        self,
+        goal: str,
+        criteria: list[dict[str, Any]],
+        evidence: list[str],
+        run_state: dict[str, Any],
+    ) -> CompletionEvaluation:
+        pending = [
+            CriterionEvaluation(
+                criterion_id=str(item["criterion_id"]),
+                status="pending",
+                reason="No completion evaluator is configured for this model.",
+            )
+            for item in criteria
+        ]
+        return CompletionEvaluation(criteria=pending, summary="Completion could not be independently evaluated.")
 
 
 class MockModelAdapter(ModelAdapter):
@@ -527,6 +556,21 @@ class MockModelAdapter(ModelAdapter):
             rationale="Refresh the current page observation before choosing another action.",
         )
 
+    def evaluate_completion(self, goal, criteria, evidence, run_state):
+        completed = run_state.get("memory", {}).get("finish_requested") and run_state.get("status") != "waiting_for_human"
+        return CompletionEvaluation(
+            criteria=[
+                CriterionEvaluation(
+                    criterion_id=str(item["criterion_id"]),
+                    status="completed" if completed else "pending",
+                    evidence=evidence[-3:] if completed else [],
+                    reason="The run reached an explicit finish action." if completed else "The run has not finished.",
+                )
+                for item in criteria
+            ],
+            summary="Mock completion evaluation used for deterministic tests.",
+        )
+
 
 class OpenAIModelAdapter(ModelAdapter):
     def __init__(self, model_name: str, api_key: str, base_url: str | None = None):
@@ -575,3 +619,39 @@ class OpenAIModelAdapter(ModelAdapter):
             ]
         )
         return response if isinstance(response, ToolAction) else ToolAction.model_validate(response)
+
+    def evaluate_completion(self, goal, criteria, evidence, run_state):
+        response = self.client.with_structured_output(
+            CompletionEvaluation,
+            method="function_calling",
+        ).invoke(
+            [
+                (
+                    "system",
+                    (
+                        "Evaluate completion against the original goal. Assess every criterion separately. "
+                        "Use only concrete evidence supplied in the payload; unsupported assertions are pending. "
+                        "A criterion requiring a file, calculation, or verification is completed only when the "
+                        "evidence shows that artifact or verification. Return evidence references by quoting the "
+                        "specific evidence strings. Do not invent results."
+                    ),
+                ),
+                (
+                    "user",
+                    json.dumps(
+                        {
+                            "goal": goal,
+                            "criteria": criteria,
+                            "evidence": evidence,
+                            "run_state": run_state,
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
+            ]
+        )
+        return (
+            response
+            if isinstance(response, CompletionEvaluation)
+            else CompletionEvaluation.model_validate(response)
+        )
