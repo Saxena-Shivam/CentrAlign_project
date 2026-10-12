@@ -1,0 +1,37 @@
+{% extends 'base.html' %}
+{% block title %}Activity · CentrAlign{% endblock %}
+
+{% block content %}
+  <div class="page-heading">
+    <div>
+      <p class="eyebrow">AUDIT TRAIL</p>
+      <h1>Activity</h1>
+      <p class="page-description">Recent sign-ins and payable changes recorded by the app.</p>
+    </div>
+  </div>
+
+  <section class="panel">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">HISTORY</p>
+        <h2>Recent activity</h2>
+      </div>
+      <span class="record-count">{{ logs|length }} events</span>
+    </div>
+    {% if logs %}
+      <ol class="activity-list">
+        {% for row in logs %}
+          <li>
+            <span class="activity-marker" aria-hidden="true"></span>
+            <div class="activity-copy">
+              <strong>{{ row["message"] }}</strong>
+              <time>{{ row["created_at"] }}</time>
+            </div>
+          </li>
+        {% endfor %}
+      </ol>
+    {% else %}
+      <p class="empty-state">No activity has been recorded.</p>
+    {% endif %}
+  </section>
+{% endblock %}

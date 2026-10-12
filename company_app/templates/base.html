@@ -3,14 +3,18 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{% block title %}CentrAlign{% endblock %}</title>
+    <meta name="theme-color" content="#f4f6fa">
+    <title>{% block title %}CentrAlign Payables{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   </head>
-  <body>
-    <div class="container">
+  <body class="{% block body_class %}{% endblock %}">
+    {% if session.get('username') %}
+      {% include 'partials/header.html' %}
+    {% endif %}
+    <main class="container">
       {% with messages = get_flashed_messages() %}
         {% if messages %}
-          <div class="flash-box">
+          <div class="flash-box" role="status">
             {% for message in messages %}
               <div class="flash-message">{{ message }}</div>
             {% endfor %}
@@ -18,6 +22,6 @@
         {% endif %}
       {% endwith %}
       {% block content %}{% endblock %}
-    </div>
+    </main>
   </body>
 </html>

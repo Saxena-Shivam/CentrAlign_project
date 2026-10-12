@@ -1,0 +1,11 @@
+<header class="site-header">
+  <a class="brand" href="{{ url_for('payables') }}">CentrAlign <span>Payables</span></a>
+  <nav class="site-nav" aria-label="Main navigation">
+    <a class="{{ 'active' if request.endpoint == 'payables' else '' }}" href="{{ url_for('payables') }}">Payables</a>
+    <a class="{{ 'active' if request.endpoint == 'vendors' else '' }}" href="{{ url_for('vendors') }}">Vendors</a>
+    <a class="{{ 'active' if request.endpoint == 'activity' else '' }}" href="{{ url_for('activity') }}">Activity</a>
+  </nav>
+  <form class="signout-form" method="post" action="{{ url_for('logout') }}">
+    <button class="link-button" type="submit">Sign out</button>
+  </form>
+</header>

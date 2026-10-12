@@ -1,0 +1,37 @@
+{% extends 'base.html' %}
+{% block title %}Vendors · CentrAlign{% endblock %}
+
+{% block content %}
+  <div class="page-heading">
+    <div>
+      <p class="eyebrow">DIRECTORY</p>
+      <h1>Vendors</h1>
+      <p class="page-description">Approved vendors available for payable entry.</p>
+    </div>
+  </div>
+
+  <section class="panel">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">COMPANY DIRECTORY</p>
+        <h2>Approved vendors</h2>
+      </div>
+      <span class="record-count">{{ vendors|length }} vendors</span>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Vendor</th><th>Status</th></tr></thead>
+        <tbody>
+          {% for vendor in vendors %}
+            <tr>
+              <td class="vendor-cell">{{ vendor }}</td>
+              <td><span class="status-pill">Approved</span></td>
+            </tr>
+          {% else %}
+            <tr><td colspan="2">No vendors are available.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+{% endblock %}

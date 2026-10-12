@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 
 from company_app.app import create_app
 
@@ -81,7 +82,7 @@ def test_chaos_mode_renames_visible_fields_and_accepts_submission(monkeypatch, t
     client = app.test_client()
     client.post("/login", data={"username": "demo", "password": "demo"})
 
-    page = client.get("/payables")
+    page = client.get("/payables/new")
     assert b'name="vendor_choice"' in page.data
     assert b'name="invoice_reference"' in page.data
     assert b'name="payable_total"' in page.data
@@ -106,7 +107,7 @@ def test_chaos_mode_extra_required_field_is_visible_and_enforced(monkeypatch, tm
     client = app.test_client()
     client.post("/login", data={"username": "demo", "password": "demo"})
 
-    page = client.get("/payables")
+    page = client.get("/payables/new")
     assert b'name="approval_code"' in page.data
 
     response = client.post(
@@ -130,5 +131,59 @@ def test_chaos_mode_moves_submit_button_before_fields(monkeypatch, tmp_path):
     client = app.test_client()
     client.post("/login", data={"username": "demo", "password": "demo"})
 
-    page = client.get("/payables").data
+    page = client.get("/payables/new").data
     assert page.index(b"Save payable") < page.index(b'name="vendor"')
+
+
+def test_vendor_text_input_validates_known_vendors(monkeypatch, tmp_path):
+    db_path = tmp_path / "vendor_text.db"
+    monkeypatch.setenv("EVAL_DB_PATH", str(db_path))
+    app = create_app()
+    client = app.test_client()
+    client.post("/login", data={"username": "demo", "password": "demo"})
+
+    form = client.get("/payables/new")
+    assert b'id="vendor"' in form.data
+    assert b'name="vendor"' in form.data
+    assert b'type="text"' in form.data
+    assert b'aria-describedby="vendor-help"' in form.data
+    assert b"Acme, Contoso, Fabrikam, Northwind" in form.data
+    assert b"<select" not in form.data
+
+    invalid = client.post(
+        "/payables",
+        data={
+            "vendor": "Unknown Company",
+            "invoice_number": "INV-5510",
+            "amount": "25.00",
+            "due_date": "2026-12-01",
+        },
+    )
+    assert invalid.status_code == 400
+    assert b"Vendor must be one of the listed vendors." in invalid.data
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute(
+            "SELECT 1 FROM payables WHERE invoice_number = ?", ("INV-5510",)
+        ).fetchone() is None
+
+
+def test_multi_page_navigation_requires_login_and_renders_reference_pages(monkeypatch, tmp_path):
+    monkeypatch.setenv("EVAL_DB_PATH", str(tmp_path / "navigation.db"))
+    app = create_app()
+    client = app.test_client()
+
+    for path in ("/payables", "/payables/new", "/vendors", "/activity"):
+        response = client.get(path)
+        assert response.status_code == 302
+        assert response.headers["Location"].endswith("/login")
+
+    client.post("/login", data={"username": "demo", "password": "demo"})
+    payables = client.get("/payables")
+    vendors = client.get("/vendors")
+    activity = client.get("/activity")
+
+    assert payables.status_code == 200 and b"All payables" in payables.data
+    assert b"Add payable" in payables.data
+    assert vendors.status_code == 200 and b"Approved vendors" in vendors.data
+    assert b"Northwind" in vendors.data
+    assert activity.status_code == 200 and b"Recent activity" in activity.data

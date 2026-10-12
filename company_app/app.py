@@ -78,6 +78,31 @@ def create_app() -> Flask:
             "rename_field": chaos_mode == "rename_field",
         }
 
+    def render_payable_form(
+        vendor: str = "",
+        invoice_number: str = "",
+        amount: str = "",
+        due_date: str = "",
+        approval_code: str = "",
+        first_submit_fails: bool = False,
+        status: int = 200,
+    ):
+        return (
+            render_template(
+                "payable_form.html",
+                vendors=get_vendors(),
+                form_state=form_state(
+                    vendor,
+                    invoice_number,
+                    amount,
+                    due_date,
+                    approval_code,
+                    first_submit_fails,
+                ),
+            ),
+            status,
+        )
+
     @app.get("/")
     def index():
         if "username" not in session:
@@ -106,17 +131,31 @@ def create_app() -> Flask:
         if "username" not in session:
             return redirect(url_for("login"))
 
-        conn = get_db()
-        try:
-            payables = conn.execute(
-                "SELECT vendor, invoice_number, amount, due_date FROM payables ORDER BY due_date ASC"
-            ).fetchall()
-            logs = conn.execute("SELECT message, created_at FROM activity_log ORDER BY id DESC LIMIT 12").fetchall()
-        finally:
-            conn.close()
+        rows = _fetch_payables()
+        total_amount = sum(float(row["amount"]) for row in rows)
+        return render_template(
+            "payables.html",
+            payables=rows,
+            total_amount=total_amount,
+        )
 
-        form = form_state()
-        return render_template("payables.html", payables=payables, logs=logs, vendors=get_vendors(), form_state=form)
+    @app.get("/payables/new")
+    def new_payable():
+        if "username" not in session:
+            return redirect(url_for("login"))
+        return render_payable_form()
+
+    @app.get("/vendors")
+    def vendors():
+        if "username" not in session:
+            return redirect(url_for("login"))
+        return render_template("vendors.html", vendors=get_vendors())
+
+    @app.get("/activity")
+    def activity():
+        if "username" not in session:
+            return redirect(url_for("login"))
+        return render_template("activity.html", logs=_fetch_logs())
 
     @app.post("/payables")
     def add_payable():
@@ -136,29 +175,28 @@ def create_app() -> Flask:
             if not session.get("first_submit_failed"):
                 session["first_submit_failed"] = True
                 flash("The first submission fails on purpose to test recovery flow.")
-                return render_template(
-                    "payables.html",
-                    vendors=get_vendors(),
-                    payables=_fetch_payables(),
-                    logs=_fetch_logs(),
-                    form_state=form_state(
-                        vendor, invoice_number, amount, due_date, approval_code, first_submit_fails=True
-                    ),
+                return render_payable_form(
+                    vendor,
+                    invoice_number,
+                    amount,
+                    due_date,
+                    approval_code,
+                    first_submit_fails=True,
                 )
 
         if chaos_mode == "extra_required" and not approval_code:
             flash("Approval code is required in chaos mode.")
-            return render_template(
-                "payables.html",
-                vendors=get_vendors(),
-                payables=_fetch_payables(),
-                logs=_fetch_logs(),
-                form_state=form_state(vendor, invoice_number, amount, due_date, approval_code),
-            )
+            return render_payable_form(vendor, invoice_number, amount, due_date, approval_code)
 
         errors = []
-        if not vendor or vendor not in get_vendors():
+        matching_vendor = next(
+            (known_vendor for known_vendor in get_vendors() if known_vendor.casefold() == vendor.casefold()),
+            None,
+        )
+        if matching_vendor is None:
             errors.append("Vendor must be one of the listed vendors.")
+        else:
+            vendor = matching_vendor
         if not invoice_number:
             errors.append("Invoice number is required.")
         try:
@@ -186,13 +224,7 @@ def create_app() -> Flask:
         if errors:
             for error in errors:
                 flash(error)
-            return render_template(
-                "payables.html",
-                vendors=get_vendors(),
-                payables=_fetch_payables(),
-                logs=_fetch_logs(),
-                form_state=form_state(vendor, invoice_number, amount, due_date, approval_code),
-            )
+            return render_payable_form(vendor, invoice_number, amount, due_date, approval_code, status=400)
 
         conn = get_db()
         try:
@@ -221,7 +253,7 @@ def create_app() -> Flask:
         finally:
             conn.close()
 
-    @app.get("/logout")
+    @app.route("/logout", methods=["GET", "POST"])
     def logout():
         session.clear()
         return redirect(url_for("login"))

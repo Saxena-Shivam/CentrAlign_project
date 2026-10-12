@@ -4,7 +4,7 @@ A small, reliable AI task worker prototype built for the CentrAlign internship a
 
 ## What is included
 
-- Flask mock company app with login, vendor list, payable form, payables table, and activity log
+- Flask mock company app with login, separate payables/vendor/activity pages, and a dedicated payable form
 - SQLite-backed validation with realistic seeded data
 - Browser automation tool definitions for navigation and form interaction
 - A custom agent loop with plan, memory, tool execution, and verification
@@ -31,6 +31,8 @@ A small, reliable AI task worker prototype built for the CentrAlign internship a
 The goal is the task instruction: enter what you want it to do after `--goal`, or enter it at the prompt when running `centralign run` without that option.
 To watch the worker's browser actions, set `HEADLESS=false`. Visible mode waits 1.2 seconds after each navigation or form action by default; adjust `BROWSER_ACTION_DELAY_MS` (0-60000) to make it slower or faster.
 
+After signing in, the app has separate Payables, Vendors, and Activity pages. Use the navigation at the top to switch between them; add a payable from the dedicated Add payable form. The vendor field is plain text (no dropdown); the approved vendor names are shown beside it, and the server validates the entered value before saving.
+
 For an offline run without an API key, use `LLM_PROVIDER=mock`. The deterministic mock supports the login-and-inspect flow and payable creation goals that explicitly include a listed vendor, invoice number, amount, and due date (`YYYY-MM-DD`). Login navigation and entry of locally configured credentials are handled by the worker for all providers; credentials are not included in model prompts. Example:
 
 ```powershell
@@ -50,7 +52,10 @@ centralign run
 ```
 
 Never paste an API key into chat or commit it. `.env` is gitignored. OpenAI-compatible presets are `openai`, `groq`, and `huggingface`; set `LLM_BASE_URL` when needed. For Groq/Hugging Face, set the provider-specific model name and an API key locally. Tool-calling capability varies by model/provider. These hosted-provider paths are not covered by the no-key automated tests.
-Login navigation and configured credential entry are handled locally for all providers. For a goal requesting the payable count, total, and average, the worker reads the rendered table and calculates those values locally rather than asking the hosted model to navigate or calculate them.
+Login navigation and configured credential entry are handled locally for all providers. Read-only payable count, total, and average requests are answered from the rendered register, including requests for only one metric. Activity-page requests follow the observed navigation link, read the visible entries, and summarize the latest entries without changing records. Observation-report requests save the captured payables table once and finish instead of repeating reads or writes.
+
+Hosted-model action selection uses the reusable instructions in `agent/src/centralign_agent/prompts.py`; task-specific hosted-model decisions are not hard-coded in the run loop. Runtime safeguards still enforce the configured navigation origin, local credential privacy, payable approval, and post-write verification. The no-key mock provider has a deliberately limited deterministic policy for the demo flows and is not a general natural-language agent.
+On the payable form, explicit payable goals use the form-aware workflow for every provider. Chromium verifies each filled value in the live DOM; a fill that does not persist is reported as an error, and the actual observed field values are printed in the run log. A model-selected Save button click is routed through the same approved form-submission path; direct browser clicks cannot bypass approval. After the app confirms a save, the worker performs one fresh register read and does not retry the write if verification fails. For other tasks, a browser action that repeats without changing the observed page is stopped and reported instead of consuming the remaining step limit.
 
 ## Default login
 
@@ -95,6 +100,8 @@ Each run stores its state under `runs/<run-id>/` with files such as:
 - `trace.jsonl`
 - `screenshots/` (when requested by the goal)
 - `observation.md` (when the goal asks to write/save/document observations)
+
+The payables form is available at `/payables/new`; `/payables` shows only the payable register.
 
 For example, `centralign run --goal 'Log in and inspect the payables list and write your observation'` writes a read-only Markdown report containing the observed table to `runs/<run-id>/observation.md` and prints the report path.
 

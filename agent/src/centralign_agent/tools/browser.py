@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from pydantic import BaseModel, Field
 
@@ -141,6 +141,19 @@ class BrowserToolSet:
             "or [name=\"...\"] selector."
         )
 
+    def _resolve_locator(self, page, selector: str):
+        observed_element = re.fullmatch(r"#?element-(\d+)", selector.strip())
+        if observed_element:
+            actual_id_selector = f"#{selector.lstrip('#')}"
+            if page.locator(actual_id_selector).count():
+                return page.locator(actual_id_selector)
+            elements = page.locator("input, button, select, textarea, a")
+            index = int(observed_element.group(1))
+            if index < elements.count():
+                return elements.nth(index)
+            raise ValueError(f"Observed element selector {selector!r} is no longer present.")
+        return page.locator(self._resolve_selector(page, selector))
+
     def _observe(self, page, selector: str | None = None) -> dict[str, Any]:
         self._check_current_origin(page)
         locator = page.locator(selector or "body")
@@ -158,6 +171,8 @@ class BrowserToolSet:
                     element.type === 'submit' ? 'button' : element.type || 'textbox'
                 );
                 const isPassword = element.type === 'password';
+                const describedBy = (element.getAttribute('aria-describedby') || '')
+                    .split(/\\s+/).filter(Boolean);
                 return {
                     id: element.id || `element-${index}`,
                     tag: element.tagName.toLowerCase(),
@@ -168,6 +183,10 @@ class BrowserToolSet:
                     value: isPassword && element.value ? '[redacted]' : (element.value || ''),
                     filled: Boolean(element.value),
                     required: Boolean(element.required),
+                    href: element.tagName === 'A' ? element.href : '',
+                    description: describedBy
+                        .map(id => element.ownerDocument.getElementById(id)?.innerText.trim() || '')
+                        .filter(Boolean).join(' '),
                     options: element.tagName === 'SELECT'
                         ? Array.from(element.options).map(option => ({
                             label: option.innerText.trim(), value: option.value
@@ -187,6 +206,13 @@ class BrowserToolSet:
                 return { headers, rows };
             })"""
         )
+        activity_items = page.locator("ol.activity-list > li").evaluate_all(
+            """items => items.map(item => {
+                const message = item.querySelector('strong')?.innerText.trim() || '';
+                const timestamp = item.querySelector('time')?.innerText.trim() || '';
+                return [message, timestamp].filter(Boolean).join(' — ');
+            }).filter(Boolean)"""
+        )
         return {
             "status": "ok",
             "url": page.url,
@@ -194,18 +220,20 @@ class BrowserToolSet:
             "text": text,
             "interactive_elements": interactive,
             "tables": tables,
+            "activity_items": activity_items,
         }
 
     def payable_form_details(self) -> dict[str, Any]:
         page = self._ensure_page()
         self._check_current_origin(page)
-        if urlsplit(page.url).path.rstrip("/") != "/payables":
+        if urlsplit(page.url).path.rstrip("/") not in {"/payables", "/payables/new"}:
             raise ValueError("The current page is not the payables form.")
         observation = self._observe(page)
         labels = {
             "vendor": "vendor",
             "invoice number": "invoice_number",
             "amount": "amount",
+            "amount (usd)": "amount",
             "due date": "due_date",
             "approval code": "approval_code",
         }
@@ -244,13 +272,63 @@ class BrowserToolSet:
         try:
             page = self._ensure_page()
             self._check_current_origin(page)
-            selector = self._resolve_selector(page, args.selector)
-            page.locator(selector).click(timeout=5000)
+            if self.is_payable_submit_click({"selector": args.selector}):
+                raise ValueError(
+                    "Submitting a payable by clicking its save button is blocked. "
+                    "Use submit_form so the runtime approval check can run."
+                )
+            observed_href = re.fullmatch(r"""a\[href=(['"])(.*?)\1\]""", args.selector.strip())
+            if observed_href:
+                href = observed_href.group(2)
+                target_url = urlsplit(href)
+                if target_url.scheme or target_url.netloc:
+                    ensure_allowed_origin(href, self.allowed_origin)
+                links = page.locator("a").evaluate_all(
+                    "(anchors) => anchors.map((anchor) => anchor.href)"
+                )
+                resolved_url = urljoin(page.url, href)
+                matching_links = [
+                    index for index, link_url in enumerate(links)
+                    if link_url == resolved_url
+                ]
+                if len(matching_links) != 1:
+                    raise ValueError(
+                        f"Expected one visible link for {href!r}, found {len(matching_links)}."
+                    )
+                page.locator("a").nth(matching_links[0]).click(timeout=5000)
+            else:
+                self._resolve_locator(page, args.selector).click(timeout=5000)
             self._check_current_origin(page)
             self._wait_after_action(page)
             return self._observe(page)
         except Exception as exc:
             return self._error(f"Click failed: {exc}", page)
+
+    def is_payable_submit_click(self, arguments: dict[str, Any]) -> bool:
+        args = ClickArgs.model_validate(arguments)
+        page = self._ensure_page()
+        self._check_current_origin(page)
+        if urlsplit(page.url).path.rstrip("/") != "/payables/new":
+            return False
+
+        target = self._resolve_locator(page, args.selector)
+        if target.count() != 1:
+            return False
+        return bool(
+            target.evaluate(
+                """element => {
+                    const submit = element.closest('button, input[type="submit"]');
+                    if (!submit || submit.type !== 'submit') return false;
+                    const form = submit.closest('form');
+                    return Boolean(
+                        form &&
+                        form.querySelector('input[type="number"]') &&
+                        form.querySelector('input[type="date"]') &&
+                        form.querySelectorAll('input[required]').length >= 3
+                    );
+                }"""
+            )
+        )
 
     def fill(self, arguments: dict[str, Any]) -> dict[str, Any]:
         args = FillArgs.model_validate(arguments)
@@ -258,8 +336,16 @@ class BrowserToolSet:
         try:
             page = self._ensure_page()
             self._check_current_origin(page)
-            selector = self._resolve_selector(page, args.selector)
-            page.locator(selector).fill(args.value, timeout=5000)
+            field = self._resolve_locator(page, args.selector)
+            field.fill(args.value, timeout=5000)
+            actual_value = field.evaluate(
+                "(element) => 'value' in element ? element.value : element.innerText"
+            )
+            if actual_value != args.value:
+                raise ValueError(
+                    f"Field fill was not retained: expected {args.value!r}, "
+                    f"but the field contains {actual_value!r}."
+                )
             self._wait_after_action(page)
             return self._observe(page)
         except Exception as exc:
@@ -272,8 +358,16 @@ class BrowserToolSet:
             page = self._ensure_page()
             self._check_current_origin(page)
             for selector, value in args.fields.items():
-                resolved_selector = self._resolve_selector(page, selector)
-                page.locator(resolved_selector).fill(value, timeout=5000)
+                field = self._resolve_locator(page, selector)
+                field.fill(value, timeout=5000)
+                actual_value = field.evaluate(
+                    "(element) => 'value' in element ? element.value : element.innerText"
+                )
+                if actual_value != value:
+                    raise ValueError(
+                        f"Field {selector!r} did not retain the requested value: "
+                        f"expected {value!r}, got {actual_value!r}."
+                    )
             self._wait_after_action(page)
             return self._observe(page)
         except Exception as exc:
@@ -285,8 +379,7 @@ class BrowserToolSet:
         try:
             page = self._ensure_page()
             self._check_current_origin(page)
-            selector = self._resolve_selector(page, args.selector)
-            page.locator(selector).select_option(args.value, timeout=5000)
+            self._resolve_locator(page, args.selector).select_option(args.value, timeout=5000)
             self._wait_after_action(page)
             return self._observe(page)
         except Exception as exc:
@@ -322,9 +415,16 @@ class BrowserToolSet:
         try:
             page = self._ensure_page()
             self._check_current_origin(page)
+            form = self._resolve_locator(page, args.selector)
+            if args.selector.strip() == "form" and form.count() > 1:
+                candidates = page.locator("form").filter(
+                    has=page.locator("input[required], select[required], textarea[required]")
+                )
+                if candidates.count() != 1:
+                    raise ValueError("The page has multiple forms and no unique required-field form to submit.")
+                form = candidates
             with page.expect_navigation(wait_until="domcontentloaded", timeout=5000):
-                selector = self._resolve_selector(page, args.selector)
-                page.locator(selector).evaluate("(form) => form.requestSubmit()")
+                form.evaluate("(form) => form.requestSubmit()")
             self._check_current_origin(page)
             self._wait_after_action(page)
             return self._observe(page)
